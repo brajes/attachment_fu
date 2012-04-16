@@ -111,6 +111,7 @@ module Technoweenie # :nodoc:
 
           begin
             require 'cloudfiles'
+            require 'mime/types' 
           rescue LoadError
             raise RequiredLibraryNotFoundError.new('CloudFiles could not be loaded')
           end
@@ -121,12 +122,18 @@ module Technoweenie # :nodoc:
           rescue
             #raise ConfigFileNotFoundError.new('File %s not found' % @@cloudfiles_config_path)
           end
-
+          
           @@container_name = @@cloudfiles_config[:container_name]
           @@cf = CloudFiles::Connection.new(@@cloudfiles_config[:username], @@cloudfiles_config[:api_key])
           @@container = @@cf.container(@@container_name)
           
           base.before_update :rename_file
+        end
+        
+        def reconnect_cloudfiles
+          @@container_name = @@cloudfiles_config[:container_name]
+          @@cf = CloudFiles::Connection.new(@@cloudfiles_config[:username], @@cloudfiles_config[:api_key])
+          @@container = @@cf.container(@@container_name)
         end
 
         # Overwrites the base filename writer in order to store the old filename
@@ -198,8 +205,39 @@ module Technoweenie # :nodoc:
 
           def save_to_storage
             if save_attachment?
-              @object = @@container.create_object(full_filename)
-              @object.write((temp_path ? File.open(temp_path) : temp_data))
+            
+              retry_times = 0
+              saved = false
+              
+              while saved == false and retry_times < 3
+                begin
+                  mime_types = MIME::Types.type_for(full_filename)
+                  @object = @@container.create_object(full_filename)
+                  
+                  if mime_types.first.nil?
+                    if temp_path
+                      @object.load_from_filename(temp_path, {}, true)
+                    else
+                      @object.write(temp_data)
+                    end
+                  else
+                    content_type_to_write = mime_types.first.to_s
+                    content_type_to_write = "text/javascript" if content_type_to_write == "application/javascript"
+                    
+                    if temp_path
+                      @object.load_from_filename(temp_path, {'Content-Type' => content_type_to_write}, true)
+                    else
+                      @object.write(temp_data, {'Content-Type' => content_type_to_write})
+                    end
+                    
+                  end
+                  saved = true
+                rescue CloudFiles::Exception::InvalidResponse
+                  reconnect_cloudfiles
+                  saved = false
+                  retry_times += 1
+                end
+              end
             end
 
             @old_filename = nil
