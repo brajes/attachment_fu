@@ -205,7 +205,6 @@ module Technoweenie # :nodoc:
 
           def save_to_storage
             if save_attachment?
-            
               retry_times = 0
               saved = false
               
